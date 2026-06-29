@@ -1,0 +1,19 @@
+{
+  "assunto_relacionado": "Gestão do déficit das contas públicas",
+  "corte_longo": {
+    "inicio": 217.0,
+    "fim": 660.0,
+    "titulo": "Renan Santos comenta vitoria judicial do MBL e discute transparencia",
+    "descricao": "Renan Santos fala sobre o processo judicial vencido pelo MBL e reflete sobre a importancia da transparencia e da responsabilidade nos gastos publicos."
+  },
+  "corte_curto": {
+    "inicio": 456.0,
+    "fim": 514.0,
+    "titulo": "MBL e a prestacao de contas",
+    "tags": [
+      "mbl",
+      "politica",
+      "contaspublicas"
+    ]
+  }
+}

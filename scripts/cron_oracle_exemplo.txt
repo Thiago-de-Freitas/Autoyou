@@ -1,0 +1,13 @@
+# Oracle Cloud Always Free — exemplo de crontab
+# Editar com: crontab -e
+#
+# Horarios: 8h, 14h e 20h (Brasilia, UTC-3)
+# Ajuste o caminho /home/ubuntu/Autoyou para o seu diretorio real.
+
+0 11,17,23 * * * /home/ubuntu/Autoyou/scripts/rodar_pipeline_oracle.sh >> /home/ubuntu/Autoyou/logs/pipeline.log 2>&1
+
+# Verificar limites manualmente:
+#   python3 /home/ubuntu/Autoyou/oracle_free_guard.py report
+#
+# Limpar temporarios:
+#   python3 /home/ubuntu/Autoyou/oracle_free_guard.py cleanup
