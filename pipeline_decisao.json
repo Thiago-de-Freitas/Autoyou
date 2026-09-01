@@ -1,19 +1,20 @@
 {
-  "assunto_relacionado": "Discussão sobre o fim da escala de trabalho 6x1",
+  "assunto_relacionado": "Embates judiciais sobre candidaturas e campanhas digitais",
   "corte_longo": {
-    "inicio": 236.0,
-    "fim": 660.0,
-    "titulo": "Renan Santos e MBL debatem propostas para o mercado de trabalho brasileiro",
-    "descricao": "Renan Santos comenta sobre a conjuntura econômica, o papel do MBL no debate político e as articulações em torno de pautas trabalhistas e o futuro do país."
+    "inicio": 600.0,
+    "fim": 1050.0,
+    "titulo": "Renan Santos comenta decisões do TSE sobre registros de candidatura",
+    "descricao": "Renan Santos discute os critérios legais e o papel do Tribunal Superior Eleitoral nas decisões que impactam candidaturas e campanhas eleitorais, abordando as implicações da inelegibilidade e os processos de registro no cenário político brasileiro."
   },
   "corte_curto": {
-    "inicio": 372.0,
-    "fim": 430.0,
-    "titulo": "que o MBL pensa sobre as propostas de reforma trabalhista",
+    "inicio": 900.0,
+    "fim": 958.0,
+    "titulo": "papel do TSE na regulação das candidaturas",
     "tags": [
-      "mbl",
+      "tse",
       "politica",
-      "reformatrabalhista",
+      "eleicoes",
+      "mbl",
       "renansantos"
     ]
   }

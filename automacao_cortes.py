@@ -55,7 +55,7 @@ GEMINI_MODELOS = (
     if _modelos_env
     else [
         "gemini-3.1-flash-lite-preview",
-        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash-lite",
         "gemini-2.5-flash",
         "gemini-2.0-flash",
     ]
@@ -70,8 +70,15 @@ ARQUIVO_PIPELINE_DECISAO = 'pipeline_decisao.json'
 # yt-dlp espera arquivo de cookies no formato Netscape:
 # http://curl.haxx.se/rfc/cookie_spec.html
 ARQUIVO_COOKIES_YT = 'cookies.txt'
+ARQUIVO_COOKIES_YT_ALT = 'cookies1.txt'
 ARQUIVO_COOKIES_YT_FALLBACK = 'cookies_estaticos.txt'
 ARQUIVO_COOKIES_TIKTOK = 'tiktok_cookies.txt'
+ARQUIVO_COOKIES_INSTAGRAM = 'instagram_cookies.txt'
+ARQUIVO_COOKIES_INSTAGRAM_ALT = 'cookies1.txt'
+ARQUIVO_SESSAO_INSTAGRAM = 'instagram_session.json'
+TIKTOK_HEADLESS = os.getenv("TIKTOK_HEADLESS", "true").strip().lower() in ("1", "true", "yes", "on")
+SKIP_YOUTUBE_UPLOAD = os.getenv("SKIP_YOUTUBE_UPLOAD", "").strip().lower() in ("1", "true", "yes", "on")
+SKIP_INSTAGRAM_UPLOAD = os.getenv("SKIP_INSTAGRAM_UPLOAD", "").strip().lower() in ("1", "true", "yes", "on")
 # Limite de gravacao ao baixar live ativa (evita download infinito)
 LIVE_GRAVACAO_MAX_MINUTOS = int(os.getenv("LIVE_GRAVACAO_MAX_MINUTOS", "90"))
 # Duracao minima do corte longo (YouTube) e margem entre cortes ja publicados
@@ -343,6 +350,34 @@ def arquivo_cookies_netscape_valido(path: str) -> bool:
         return False
     return False
 
+def arquivo_tem_cookies_youtube(path: str) -> bool:
+    """Exige dominio youtube.com — dump completo do Chrome sem YouTube nao serve."""
+    if not arquivo_cookies_netscape_valido(path):
+        return False
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                partes = line.split("\t")
+                if len(partes) < 6:
+                    continue
+                if "youtube.com" in partes[0].lower():
+                    return True
+    except OSError:
+        return False
+    return False
+
+def _arquivos_cookies_youtube_candidatos():
+    candidatos = []
+    extra = os.getenv("YOUTUBE_COOKIE_FILE", "").strip()
+    if extra:
+        candidatos.append(extra)
+    for nome in (ARQUIVO_COOKIES_YT, ARQUIVO_COOKIES_YT_ALT, ARQUIVO_COOKIES_YT_FALLBACK):
+        if nome and nome not in candidatos:
+            candidatos.append(nome)
+    return candidatos
+
 def tiktok_cookies_validos():
     if not os.path.exists(ARQUIVO_COOKIES_TIKTOK):
         return False
@@ -362,6 +397,126 @@ def tiktok_cookies_validos():
     except OSError:
         return False
     return False
+
+def preparar_cookies_tiktok_filtrados():
+    """Gera cookie jar so com dominios TikTok (evita milhares de cookies do Chrome)."""
+    destino = ".tiktok_cookies_filtrados.txt"
+    if not os.path.isfile(ARQUIVO_COOKIES_TIKTOK):
+        return ARQUIVO_COOKIES_TIKTOK
+    linhas_saida = ["# Netscape HTTP Cookie File", "# Filtrado para tiktok.com"]
+    encontrou = 0
+    try:
+        with open(ARQUIVO_COOKIES_TIKTOK, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                partes = line.split("\t")
+                if len(partes) < 7:
+                    continue
+                if "tiktok.com" not in partes[0]:
+                    continue
+                linhas_saida.append(line.rstrip())
+                encontrou += 1
+    except OSError:
+        return ARQUIVO_COOKIES_TIKTOK
+    if encontrou == 0:
+        return ARQUIVO_COOKIES_TIKTOK
+    with open(destino, "w", encoding="utf-8") as f:
+        f.write("\n".join(linhas_saida) + "\n")
+    return destino
+
+def _arquivos_cookies_instagram_candidatos():
+    candidatos = []
+    extra = os.getenv("INSTAGRAM_COOKIE_FILE", "").strip()
+    if extra:
+        candidatos.append(extra)
+    for nome in (ARQUIVO_COOKIES_INSTAGRAM, ARQUIVO_COOKIES_INSTAGRAM_ALT):
+        if nome and nome not in candidatos:
+            candidatos.append(nome)
+    return candidatos
+
+def ler_cookies_instagram_netscape():
+    """Retorna dict nome->valor dos cookies instagram.com (primeiro arquivo valido)."""
+    for path in _arquivos_cookies_instagram_candidatos():
+        if not os.path.isfile(path) or not arquivo_cookies_netscape_valido(path):
+            continue
+        cookies = {}
+        try:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if line.startswith("#") or not line.strip():
+                        continue
+                    partes = line.split("\t")
+                    if len(partes) < 7:
+                        continue
+                    if "instagram.com" not in partes[0].lower():
+                        continue
+                    cookies[partes[5]] = partes[6].strip()
+        except OSError:
+            continue
+        if cookies.get("sessionid"):
+            return cookies, path
+    return {}, None
+
+def instagram_cookies_validos():
+    cookies, _ = ler_cookies_instagram_netscape()
+    sessionid = cookies.get("sessionid", "")
+    return bool(sessionid and len(sessionid) > 20)
+
+def salvar_cookies_instagram_netscape(cookies_playwright, destino=None):
+    destino = destino or ARQUIVO_COOKIES_INSTAGRAM
+    linhas = ["# Netscape HTTP Cookie File", "# Exportado pelo pipeline AutoYou"]
+    for cookie in cookies_playwright:
+        dominio = cookie.get("domain", "")
+        if "instagram.com" not in dominio:
+            continue
+        secure = "TRUE" if cookie.get("secure") else "FALSE"
+        expires = int(cookie.get("expires", 0) or 0)
+        linhas.append(
+            f"{dominio}\tTRUE\t{cookie.get('path', '/')}\t{secure}\t{expires}"
+            f"\t{cookie.get('name', '')}\t{cookie.get('value', '')}"
+        )
+    with open(destino, "w", encoding="utf-8") as f:
+        f.write("\n".join(linhas) + "\n")
+    return destino
+
+def autenticar_cliente_instagram():
+    from instagrapi import Client
+    from instagrapi.exceptions import LoginRequired
+
+    cookies, fonte = ler_cookies_instagram_netscape()
+    if not cookies.get("sessionid"):
+        raise ValueError(
+            f"sessionid do Instagram ausente. Exporte cookies em '{ARQUIVO_COOKIES_INSTAGRAM}' "
+            "ou rode --login-instagram."
+        )
+
+    cliente = Client()
+    if os.path.isfile(ARQUIVO_SESSAO_INSTAGRAM):
+        try:
+            cliente.load_settings(ARQUIVO_SESSAO_INSTAGRAM)
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+
+    chaves = ("sessionid", "csrftoken", "ds_user_id", "mid", "ig_did", "rur")
+    cookies_api = {k: v for k, v in cookies.items() if k in chaves and v}
+    settings = cliente.get_settings()
+    settings["cookies"] = {**settings.get("cookies", {}), **cookies_api}
+    cliente.set_settings(settings)
+
+    try:
+        cliente.login_by_sessionid(cookies["sessionid"])
+    except LoginRequired as exc:
+        raise ValueError(
+            f"Cookies do Instagram expirados ({fonte}). "
+            f"Renove com --login-instagram ou exporte '{ARQUIVO_COOKIES_INSTAGRAM}'."
+        ) from exc
+
+    try:
+        cliente.dump_settings(ARQUIVO_SESSAO_INSTAGRAM)
+    except OSError:
+        pass
+    return cliente
 
 def eh_erro_anti_bot_youtube(msg: str) -> bool:
     """
@@ -405,10 +560,17 @@ def eh_erro_cookies_youtube_invalidos(msg: str) -> bool:
 
 def _fontes_cookies_youtube():
     fontes = []
-    if os.path.exists(ARQUIVO_COOKIES_YT) and arquivo_cookies_netscape_valido(ARQUIVO_COOKIES_YT):
-        fontes.append(("arquivo", ARQUIVO_COOKIES_YT))
-    if os.path.exists(ARQUIVO_COOKIES_YT_FALLBACK) and arquivo_cookies_netscape_valido(ARQUIVO_COOKIES_YT_FALLBACK):
-        fontes.append(("arquivo", ARQUIVO_COOKIES_YT_FALLBACK))
+    for path in _arquivos_cookies_youtube_candidatos():
+        if not os.path.exists(path):
+            continue
+        if arquivo_tem_cookies_youtube(path):
+            fontes.append(("arquivo", path))
+        elif arquivo_cookies_netscape_valido(path):
+            print(
+                f"[!] '{path}' nao tem cookies youtube.com — ignorando. "
+                f"Exporte so youtube.com ou use '{ARQUIVO_COOKIES_YT_ALT}'.",
+                flush=True,
+            )
     browser_env = os.getenv("YOUTUBE_COOKIE_BROWSER", "").strip().lower()
     if browser_env:
         fontes.append(("browser", browser_env))
@@ -683,7 +845,7 @@ def liberar_video_atual(arquivo="video_original.mp4"):
 
 def baixar_proximo_video_disponivel(progresso, ignorar, arquivo_original, youtube_service=None):
     for tentativa in range(1, MAX_TENTATIVAS_NOVO_VIDEO + 1):
-        progresso.iniciar_etapa("Buscar live")
+        progresso.iniciar_etapa("Buscar replay")
         url_alvo = obter_live_recente_canais(progresso=progresso, video_ids_ignorar=ignorar)
         progresso.concluir_etapa()
         video_id = extrair_id_youtube(url_alvo)
@@ -725,7 +887,7 @@ def garantir_video_disponivel(progresso, arquivo_original, ignorar, youtube_serv
         if not motivo:
             return video_id, youtube_service
         print(
-            f"[*] Video {video_id} encerrado ({motivo}). Buscando proxima live...",
+            f"[*] Video {video_id} encerrado ({motivo}). Buscando proximo replay...",
             flush=True,
         )
         marcar_video_esgotado(video_id)
@@ -737,13 +899,13 @@ def garantir_video_disponivel(progresso, arquivo_original, ignorar, youtube_serv
     if not video_id:
         raise RuntimeError(
             "Nao encontrei video disponivel para cortar. "
-            "Aguarde nova live ou limpe _esgotados em historico_cortes.json."
+            "Aguarde nova live finalizar ou limpe _esgotados em historico_cortes.json."
         )
     return video_id, youtube_service
 
 def preparar_proxima_live(progresso, arquivo_original, ignorar, youtube_service=None):
     print(
-        f"[*] Baixando proxima live (video atual atingiu {MAX_CORTES_POR_VIDEO} cortes)...",
+        f"[*] Baixando proximo replay (video atual atingiu {MAX_CORTES_POR_VIDEO} cortes)...",
         flush=True,
     )
     try:
@@ -751,10 +913,10 @@ def preparar_proxima_live(progresso, arquivo_original, ignorar, youtube_service=
             progresso, ignorar, arquivo_original, youtube_service=youtube_service,
         )
         if video_id:
-            print(f"[+] Proxima live pronta: {video_id} ({arquivo_original})", flush=True)
+            print(f"[+] Proximo replay pronto: {video_id} ({arquivo_original})", flush=True)
         return video_id
     except Exception as exc:
-        print(f"[!] Nao foi possivel baixar proxima live agora: {exc}", flush=True)
+        print(f"[!] Nao foi possivel baixar proximo replay agora: {exc}", flush=True)
         return None
 
 def formatar_lacunas_prompt(lacunas):
@@ -846,25 +1008,9 @@ def _score_candidato_video(info, canal_cfg, assuntos_em_alta):
     return relevancia + bonus_risco
 
 def _varrer_canal_youtube(canal_url, fonte_atual, video_ids_ignorar, max_validacoes=8):
-    live_info = None
+    """Lista replays de lives ja finalizadas; ignora transmissoes ao vivo."""
     replays = []
     video_ids_ignorar = set(video_ids_ignorar or [])
-
-    try:
-        with _suprimir_stderr_ytdlp():
-            with YoutubeDL(_ydl_opts_youtube(extract_flat=False, fonte_cookies=fonte_atual)) as ydl:
-                info = ydl.extract_info(f"{canal_url}/live", download=False)
-                if _info_eh_live_ativa(info):
-                    live_info = info
-    except Exception as e:
-        msg = str(e)
-        if eh_erro_cookies_youtube_invalidos(msg):
-            raise
-        if not eh_live_agendada(msg):
-            print(f"[-] Aviso ao consultar /live ({canal_url}): {e}")
-
-    if live_info:
-        return live_info, replays
 
     try:
         opts_streams = _ydl_opts_youtube(extract_flat=True, fonte_cookies=fonte_atual)
@@ -884,19 +1030,23 @@ def _varrer_canal_youtube(canal_url, fonte_atual, video_ids_ignorar, max_validac
             if not det:
                 continue
             if _info_eh_live_ativa(det):
-                live_info = det
-                break
+                print(
+                    f"[*] Live em andamento ignorada: '{det.get('title', video_id)}'",
+                    flush=True,
+                )
+                continue
             if _info_eh_replay_recente(det) and video_id not in video_ids_ignorar:
                 replays.append(det)
     except Exception as e:
         print(f"[-] Erro ao varrer canal {canal_url}: {e}")
 
-    return live_info, replays
+    return replays
 
 # ==========================================
 # FUNÇÕES DE CAPTAÇÃO E DOWNLOAD
 # ==========================================
 def obter_live_recente_canais(progresso=None, video_ids_ignorar=None, assuntos_em_alta=None):
+    """Busca replay de live ja finalizada nos canais configurados (nao pega live ao vivo)."""
     video_ids_ignorar = set(video_ids_ignorar or [])
     canais = _ordenar_canais_mbl(_carregar_youtube_canais_mbl())
 
@@ -906,12 +1056,12 @@ def obter_live_recente_canais(progresso=None, video_ids_ignorar=None, assuntos_e
     if progresso:
         progresso.atualizar_sub(5, f"{len(canais)} canais MBL/Missao")
     else:
-        print(f"[*] Varrendo {len(canais)} canais MBL/Missao (prioridade strike_risk=low)...")
+        print(f"[*] Varrendo {len(canais)} canais MBL/Missao (somente replays finalizados)...")
 
     cookiefile = _cookiefile_youtube()
     fonte_atual = (_fontes_cookies_youtube() or [None])[0]
 
-    def retornar_video(info, rotulo="Live ativa", canal_cfg=None):
+    def retornar_video(info, rotulo="Replay de live", canal_cfg=None):
         titulo = info.get("title", "")
         url_final = f"https://www.youtube.com/watch?v={info['id']}"
         canal_txt = f" ({canal_cfg['label']})" if canal_cfg else ""
@@ -919,12 +1069,9 @@ def obter_live_recente_canais(progresso=None, video_ids_ignorar=None, assuntos_e
         if progresso:
             progresso.atualizar_sub(100, f"'{titulo}'{canal_txt}")
         else:
-            print(f"[+] {rotulo} encontrada{canal_txt} [score={score}]: '{titulo}'")
+            print(f"[+] {rotulo} encontrado{canal_txt} [score={score}]: '{titulo}'")
         return url_final
 
-    melhor_live = None
-    melhor_live_score = -1
-    melhor_live_cfg = None
     melhor_replay = None
     melhor_replay_score = -1
     melhor_replay_cfg = None
@@ -938,20 +1085,13 @@ def obter_live_recente_canais(progresso=None, video_ids_ignorar=None, assuntos_e
             print(f"[*] Canal [{canal_cfg.get('strike_risk', 'medium')}]: {canal_url}")
 
         try:
-            live_info, replays = _varrer_canal_youtube(
+            replays = _varrer_canal_youtube(
                 canal_url, fonte_atual, video_ids_ignorar,
             )
         except Exception as e:
             if eh_erro_cookies_youtube_invalidos(str(e)):
                 print(f"[!] Cookies do YouTube expirados em '{cookiefile or 'navegador'}'. Renove cookies.txt.", flush=True)
             continue
-
-        if live_info:
-            score = _score_candidato_video(live_info, canal_cfg, assuntos_em_alta)
-            if score > melhor_live_score:
-                melhor_live = live_info
-                melhor_live_score = score
-                melhor_live_cfg = canal_cfg
 
         for replay in replays:
             score = _score_candidato_video(replay, canal_cfg, assuntos_em_alta)
@@ -960,19 +1100,16 @@ def obter_live_recente_canais(progresso=None, video_ids_ignorar=None, assuntos_e
                 melhor_replay_score = score
                 melhor_replay_cfg = canal_cfg
 
-    if melhor_live:
-        return retornar_video(melhor_live, canal_cfg=melhor_live_cfg)
-
     if melhor_replay:
         if progresso:
-            progresso.atualizar_sub(85, "replay recente (sem live no ar)")
+            progresso.atualizar_sub(85, "replay finalizado com maior relevancia")
         else:
-            print("[*] Nenhuma live no ar. Usando replay com maior relevancia...")
-        return retornar_video(melhor_replay, rotulo="Replay recente", canal_cfg=melhor_replay_cfg)
+            print("[*] Usando replay de live finalizada com maior relevancia...")
+        return retornar_video(melhor_replay, canal_cfg=melhor_replay_cfg)
 
     raise ValueError(
-        "Nenhuma live ativa nem gravacao recente encontrada nos canais configurados. "
-        "Verifique YOUTUBE_CANAIS_MBL ou aguarde nova transmissao."
+        "Nenhum replay de live finalizada encontrado nos canais configurados. "
+        "Verifique YOUTUBE_CANAIS_MBL ou aguarde o encerramento de uma transmissao."
     )
 
 def obter_live_recente_mbl(progresso=None, video_ids_ignorar=None):
@@ -1043,6 +1180,10 @@ def baixar_video(url_video, nome_arquivo_saida, progresso=None):
             with YoutubeDL(_ydl_opts_youtube(extract_flat=False, fonte_cookies=fonte)) as ydl:
                 info = ydl.extract_info(url_video, download=False)
             eh_live = _info_eh_live_ativa(info)
+            if eh_live:
+                raise RuntimeError(
+                    "O video ainda esta ao vivo. O pipeline so processa lives ja finalizadas."
+                )
             break
         except Exception as exc:
             msg = str(exc)
@@ -1852,12 +1993,9 @@ def sintetizar_assuntos_gemini(titulos, progresso=None):
     {bloco}
     """
     config = types.GenerateContentConfig(response_mime_type="application/json")
-    res = gemini_executar_com_retry(
-        lambda: gemini_client.models.generate_content(
-            model=GEMINI_MODELOS[0],
-            contents=prompt,
-            config=config,
-        ),
+    res = gemini_gerar_conteudo_com_modelos(
+        prompt,
+        config,
         progresso=progresso,
         rotulo="sintese assuntos",
     )
@@ -2140,6 +2278,26 @@ def cota_diaria_modelo_esgotada(exc):
         )
     )
 
+def modelo_gemini_indisponivel(exc):
+    """Modelo inexistente, descontinuado ou sem acesso — troca para o proximo."""
+    if isinstance(exc, genai_errors.APIError) and exc.code == 404:
+        return True
+    msg = str(exc).upper()
+    return any(
+        chave in msg
+        for chave in (
+            "NOT_FOUND",
+            "NO LONGER AVAILABLE",
+            "IS NOT SUPPORTED",
+            "MODEL NOT FOUND",
+            "DOES NOT EXIST",
+            "INVALID MODEL",
+        )
+    )
+
+def deve_trocar_modelo_gemini(exc):
+    return cota_diaria_modelo_esgotada(exc) or modelo_gemini_indisponivel(exc)
+
 def extrair_retry_delay_api(exc, padrao=5.0):
     msg = str(exc)
     for pattern in (r"retry in (\d+(?:\.\d+)?)s", r"'retryDelay': '(\d+)s'"):
@@ -2185,8 +2343,7 @@ def gemini_executar_com_retry(operacao, progresso=None, rotulo="Gemini"):
             time.sleep(espera)
     raise ultimo_erro
 
-def gemini_gerar_cortes(arquivo_gemini, prompt, progresso=None):
-    config = types.GenerateContentConfig(response_mime_type='application/json')
+def gemini_gerar_conteudo_com_modelos(contents, config, progresso=None, rotulo="Gemini"):
     ultimo_erro = None
 
     for indice_modelo, modelo in enumerate(GEMINI_MODELOS):
@@ -2199,13 +2356,18 @@ def gemini_gerar_cortes(arquivo_gemini, prompt, progresso=None):
                     )
                 return gemini_client.models.generate_content(
                     model=modelo,
-                    contents=[arquivo_gemini, prompt],
+                    contents=contents,
                     config=config,
                 )
             except Exception as exc:
                 ultimo_erro = exc
-                if cota_diaria_modelo_esgotada(exc):
-                    print(f"[!] Cota diaria esgotada em {modelo}. Tentando proximo modelo...", flush=True)
+                if deve_trocar_modelo_gemini(exc):
+                    motivo = (
+                        "cota diaria esgotada"
+                        if cota_diaria_modelo_esgotada(exc)
+                        else "modelo indisponivel"
+                    )
+                    print(f"[!] {motivo.capitalize()} em {modelo}. Tentando proximo modelo...", flush=True)
                     break
                 if not erro_gemini_recuperavel(exc):
                     raise
@@ -2227,9 +2389,18 @@ def gemini_gerar_cortes(arquivo_gemini, prompt, progresso=None):
                 raise
 
     raise RuntimeError(
-        f"Cota da API Gemini esgotada em todos os modelos ({', '.join(GEMINI_MODELOS)}). "
-        "Aguarde reset diario ou use outra chave/plano."
+        f"Falha na API Gemini em todos os modelos ({', '.join(GEMINI_MODELOS)}). "
+        "Verifique GEMINI_MODELOS no .env ou aguarde reset de cota."
     ) from ultimo_erro
+
+def gemini_gerar_cortes(arquivo_gemini, prompt, progresso=None):
+    config = types.GenerateContentConfig(response_mime_type='application/json')
+    return gemini_gerar_conteudo_com_modelos(
+        [arquivo_gemini, prompt],
+        config,
+        progresso=progresso,
+        rotulo="analise cortes",
+    )
 
 def extrair_json_gemini(texto):
     texto = (texto or "").strip()
@@ -2463,6 +2634,54 @@ def fazer_upload_youtube(
             )
     return video_id
 
+def eh_erro_limite_upload_youtube(exc):
+    msg = str(exc).lower()
+    return (
+        "uploadlimitexceeded" in msg
+        or "exceeded the number of videos they may upload" in msg
+    )
+
+def executar_uploads_youtube(youtube_service, arquivo_longo, arquivo_curto, decisao, progresso):
+    """Envia longo + Shorts. Em limite diario do YouTube, pula sem abortar o pipeline."""
+    if SKIP_YOUTUBE_UPLOAD:
+        print("[*] SKIP_YOUTUBE_UPLOAD ativo — pulando uploads YouTube.", flush=True)
+        progresso.iniciar_etapa("Upload YouTube longo")
+        progresso.concluir_etapa("pulado (SKIP_YOUTUBE_UPLOAD)")
+        progresso.iniciar_etapa("Upload YouTube Shorts")
+        progresso.concluir_etapa("pulado (SKIP_YOUTUBE_UPLOAD)")
+        return False
+
+    try:
+        progresso.iniciar_etapa("Upload YouTube longo")
+        fazer_upload_youtube(
+            youtube_service, arquivo_longo, decisao['corte_longo']['titulo'],
+            decisao['corte_longo']['descricao'], ["mbl"],
+            progresso=progresso, thumbnail=THUMB_HORIZONTAL,
+        )
+        progresso.concluir_etapa()
+
+        progresso.iniciar_etapa("Upload YouTube Shorts")
+        fazer_upload_youtube(
+            youtube_service, arquivo_curto, decisao['corte_curto']['titulo'],
+            "#Shorts #MBL", decisao['corte_curto']['tags'],
+            is_shorts=True, progresso=progresso, thumbnail=THUMB_VERTICAL,
+        )
+        progresso.concluir_etapa()
+        return True
+    except Exception as exc:
+        if not eh_erro_limite_upload_youtube(exc):
+            raise
+        print(
+            "[!] YouTube: limite diario de uploads atingido (uploadLimitExceeded). "
+            "Pulando YouTube e seguindo para TikTok. "
+            "Verifique YouTube Studio ou tente novamente em 24h.",
+            flush=True,
+        )
+        progresso.concluir_etapa("pulado (limite YouTube)")
+        progresso.iniciar_etapa("Upload YouTube Shorts")
+        progresso.concluir_etapa("pulado (limite YouTube)")
+        return False
+
 def _fechar_modais_tiktok_studio(page):
     """Fecha popups recorrentes do TikTok Studio (ex.: 'New editing features added')."""
     textos_botao = ("Got it", "Entendi", "OK", "Fechar", "Close")
@@ -2537,9 +2756,13 @@ def _aplicar_patch_modais_tiktok():
     tu_upload.complete_upload_form = complete_upload_form_com_modais
     _aplicar_patch_modais_tiktok._aplicado = True
 
-def fazer_upload_tiktok(arquivo, titulo, progresso=None):
+def fazer_upload_tiktok(arquivo, titulo, progresso=None, headless=None):
     if not progresso:
         print(f"[*] Iniciando upload TikTok...")
+    if headless is None:
+        headless = TIKTOK_HEADLESS
+    if not progresso:
+        print(f"[*] TikTok headless: {'sim' if headless else 'nao'}", flush=True)
     if not os.path.isfile(arquivo):
         print(f"[-] Arquivo de video nao encontrado: {arquivo}")
         print("[!] Rode o pipeline de render ou copie o .mp4 vertical para esta pasta.")
@@ -2552,6 +2775,7 @@ def fazer_upload_tiktok(arquivo, titulo, progresso=None):
         return False
     if not preparar_video_tiktok(arquivo):
         return False
+    cookies_arquivo = preparar_cookies_tiktok_filtrados()
     try:
         from tiktok_uploader.upload import upload_video
         _aplicar_patch_modais_tiktok()
@@ -2560,8 +2784,9 @@ def fazer_upload_tiktok(arquivo, titulo, progresso=None):
         falhas = upload_video(
             arquivo,
             description=titulo,
-            cookies=ARQUIVO_COOKIES_TIKTOK,
+            cookies=cookies_arquivo,
             browser='chrome',
+            headless=headless,
         )
         if progresso:
             progresso.parar_timer()
@@ -2582,6 +2807,207 @@ def fazer_upload_tiktok(arquivo, titulo, progresso=None):
         else:
             print(f"[-] Erro TikTok: {e}")
         return False
+
+def fazer_upload_reels(arquivo, legenda, progresso=None, thumbnail=None):
+    if not progresso:
+        print("[*] Iniciando upload Instagram Reels...")
+    if SKIP_INSTAGRAM_UPLOAD:
+        print("[*] SKIP_INSTAGRAM_UPLOAD ativo — pulando Reels.", flush=True)
+        return False
+    if not os.path.isfile(arquivo):
+        print(f"[-] Arquivo de video nao encontrado: {arquivo}")
+        return False
+    if not instagram_cookies_validos():
+        print(
+            "[!] Cookies do Instagram ausentes ou expirados. "
+            f"Rode --login-instagram ou exporte '{ARQUIVO_COOKIES_INSTAGRAM}'."
+        )
+        return False
+    if not preparar_video_tiktok(arquivo):
+        return False
+    try:
+        from instagrapi.exceptions import LoginRequired, PleaseWaitFewMinutes
+
+        if progresso:
+            progresso.iniciar_timer("upload Reels...")
+        cliente = autenticar_cliente_instagram()
+        capa = thumbnail if thumbnail and os.path.isfile(thumbnail) else None
+        media = cliente.clip_upload(arquivo, legenda, thumbnail=capa)
+        if progresso:
+            progresso.parar_timer()
+        if media:
+            print(f"[+] Reels publicado (media_id={getattr(media, 'pk', media)})", flush=True)
+            progresso and progresso.atualizar_sub(100, "Reels enviado")
+            return True
+        print("[-] Instagram nao retornou media_id apos upload.", flush=True)
+        return False
+    except ImportError:
+        print(
+            "[!] Pacote instagrapi nao instalado. Rode: pip install instagrapi",
+            flush=True,
+        )
+        return False
+    except (LoginRequired, ValueError) as exc:
+        if progresso:
+            progresso.parar_timer()
+        print(f"[!] Instagram: {exc}", flush=True)
+        return False
+    except PleaseWaitFewMinutes as exc:
+        if progresso:
+            progresso.parar_timer()
+        print(f"[!] Instagram pediu espera (rate limit): {exc}", flush=True)
+        return False
+    except Exception as exc:
+        if progresso:
+            progresso.parar_timer()
+        msg = str(exc).lower()
+        if "login" in msg or "session" in msg:
+            print(
+                "[!] Instagram: sessao invalida. "
+                f"Renove cookies em '{ARQUIVO_COOKIES_INSTAGRAM}' ou rode --login-instagram.",
+                flush=True,
+            )
+        else:
+            print(f"[-] Erro Instagram Reels: {exc}", flush=True)
+        return False
+
+def executar_uploads_redes_sociais(arquivo_vertical, legenda, progresso, thumbnail=None):
+    progresso.iniciar_etapa("Upload TikTok")
+    tiktok_ok = fazer_upload_tiktok(arquivo_vertical, legenda, progresso=progresso)
+    progresso.concluir_etapa()
+
+    progresso.iniciar_etapa("Upload Instagram Reels")
+    reels_ok = fazer_upload_reels(
+        arquivo_vertical, legenda, progresso=progresso, thumbnail=thumbnail,
+    )
+    progresso.concluir_etapa()
+    return tiktok_ok, reels_ok
+
+def pode_remover_corte_vertical(tiktok_ok, reels_ok):
+    """Mantem o .mp4 vertical se alguma rede configurada ainda nao publicou."""
+    instagram_ativo = instagram_cookies_validos() and not SKIP_INSTAGRAM_UPLOAD
+    tiktok_ativo = tiktok_cookies_validos()
+    if not tiktok_ativo and not instagram_ativo:
+        return False
+    ok = True
+    if tiktok_ativo:
+        ok = ok and tiktok_ok
+    if instagram_ativo:
+        ok = ok and reels_ok
+    return ok
+
+def testar_instagram_sessao():
+    print("=== TESTE INSTAGRAM (sessao) ===", flush=True)
+    if not instagram_cookies_validos():
+        print(f"[-] Cookies invalidos. Rode --login-instagram ou exporte '{ARQUIVO_COOKIES_INSTAGRAM}'.")
+        return False
+    try:
+        cliente = autenticar_cliente_instagram()
+        usuario = getattr(cliente, "username", None) or cliente.account_info().username
+        print(f"[+] Sessao OK — conta: @{usuario}")
+        return True
+    except Exception as exc:
+        print(f"[-] Falha na sessao Instagram: {exc}")
+        return False
+
+def login_instagram_interativo():
+    """Abre Chrome para login manual e salva cookies do instagram.com."""
+    from playwright.sync_api import sync_playwright
+
+    print("=== LOGIN INSTAGRAM (manual) ===", flush=True)
+    print("Faca login na janela do Chrome (email, Google ou Facebook).", flush=True)
+    print(f"Os cookies serao salvos em '{ARQUIVO_COOKIES_INSTAGRAM}'.\n", flush=True)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=False, channel="chrome")
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded")
+
+        for _ in range(300):
+            time.sleep(2)
+            cookies = context.cookies()
+            sessionid = next(
+                (
+                    c for c in cookies
+                    if c.get("name") == "sessionid" and "instagram.com" in c.get("domain", "")
+                ),
+                None,
+            )
+            if sessionid and "login" not in page.url.lower():
+                destino = salvar_cookies_instagram_netscape(cookies)
+                try:
+                    autenticar_cliente_instagram()
+                except Exception as exc:
+                    print(f"[!] Cookies salvos, mas validacao falhou: {exc}", flush=True)
+                    browser.close()
+                    return False
+                print(f"[+] Login OK. Cookies em '{destino}'", flush=True)
+                browser.close()
+                return True
+
+        browser.close()
+        print("[-] Timeout: login nao detectado em 10 minutos.", flush=True)
+        return False
+
+def testar_tiktok_headless():
+    """Valida login e pagina de upload no TikTok Studio sem publicar video."""
+    from tiktok_uploader.upload import TikTokUploader
+
+    if not tiktok_cookies_validos():
+        print(f"[-] Cookies invalidos em '{ARQUIVO_COOKIES_TIKTOK}'. Rode --login-tiktok primeiro.")
+        return False
+
+    print("=== TESTE TIKTOK HEADLESS ===", flush=True)
+    print("[*] Abrindo TikTok Studio em modo headless...", flush=True)
+
+    cookies_arquivo = preparar_cookies_tiktok_filtrados()
+    uploader = TikTokUploader(
+        cookies=cookies_arquivo,
+        browser="chrome",
+        headless=True,
+    )
+    try:
+        page = uploader.page
+        page.goto(
+            "https://www.tiktok.com/tiktokstudio/upload",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+    except Exception as exc:
+        print(f"[-] Falha ao abrir TikTok headless: {exc}")
+        return False
+    time.sleep(3)
+    url = page.url.lower()
+    titulo = page.title()
+    _fechar_modais_tiktok_studio(page)
+
+    if "login" in url:
+        print(f"[-] Redirecionou para login: {page.url}")
+        return False
+
+    seletores_upload = (
+        "input[type='file']",
+        "[data-e2e='upload-input']",
+        "button:has-text('Selecionar video')",
+        "button:has-text('Select video')",
+    )
+    encontrou = False
+    for seletor in seletores_upload:
+        try:
+            if page.locator(seletor).count() > 0:
+                encontrou = True
+                print(f"[+] Elemento de upload encontrado: {seletor}")
+                break
+        except Exception:
+            continue
+
+    if encontrou or "upload" in url or "tiktokstudio" in url:
+        print(f"[+] Headless OK — pagina: {titulo or page.url}")
+        return True
+
+    print(f"[-] Pagina carregou mas upload nao detectado. URL: {page.url}")
+    return False
 
 def login_tiktok_interativo():
     """
@@ -2654,7 +3080,7 @@ def executar_pipeline_completo():
             precisa_baixar = True
 
     etapas = [
-        "Buscar live",
+        "Buscar replay",
         "Autenticar YouTube",
         "Download do vídeo",
         "Análise com IA",
@@ -2662,10 +3088,11 @@ def executar_pipeline_completo():
         "Upload YouTube longo",
         "Upload YouTube Shorts",
         "Upload TikTok",
+        "Upload Instagram Reels",
     ]
     if not precisa_baixar:
         etapas.remove("Download do vídeo")
-        etapas.remove("Buscar live")
+        etapas.remove("Buscar replay")
 
     progresso = BarraProgresso(etapas)
     print("=== PIPELINE CORTADAS DA ONCA ===", flush=True)
@@ -2729,25 +3156,12 @@ def executar_pipeline_completo():
 
         garantir_thumbnails_para_upload(HORIZ, VERT)
 
-        progresso.iniciar_etapa("Upload YouTube longo")
-        fazer_upload_youtube(
-            youtube_service, HORIZ, decisao['corte_longo']['titulo'],
-            decisao['corte_longo']['descricao'], ["mbl"],
-            progresso=progresso, thumbnail=THUMB_HORIZONTAL,
-        )
-        progresso.concluir_etapa()
+        executar_uploads_youtube(youtube_service, HORIZ, VERT, decisao, progresso)
 
-        progresso.iniciar_etapa("Upload YouTube Shorts")
-        fazer_upload_youtube(
-            youtube_service, VERT, decisao['corte_curto']['titulo'],
-            "#Shorts #MBL", decisao['corte_curto']['tags'],
-            is_shorts=True, progresso=progresso, thumbnail=THUMB_VERTICAL,
+        legenda_curta = f"{decisao['corte_curto']['titulo']} #MBL"
+        tiktok_ok, reels_ok = executar_uploads_redes_sociais(
+            VERT, legenda_curta, progresso, thumbnail=THUMB_VERTICAL,
         )
-        progresso.concluir_etapa()
-
-        progresso.iniciar_etapa("Upload TikTok")
-        tiktok_ok = fazer_upload_tiktok(VERT, f"{decisao['corte_curto']['titulo']} #MBL", progresso=progresso)
-        progresso.concluir_etapa()
 
         salvar_historico(VIDEO_ID, decisao['corte_longo']['inicio'], decisao['corte_longo']['fim'])
 
@@ -2780,9 +3194,9 @@ def executar_pipeline_completo():
             os.remove(HORIZ)
         if os.path.exists(THUMB_HORIZONTAL):
             os.remove(THUMB_HORIZONTAL)
-        if tiktok_ok and os.path.exists(VERT):
+        if pode_remover_corte_vertical(tiktok_ok, reels_ok) and os.path.exists(VERT):
             os.remove(VERT)
-        if tiktok_ok and os.path.exists(THUMB_VERTICAL):
+        if pode_remover_corte_vertical(tiktok_ok, reels_ok) and os.path.exists(THUMB_VERTICAL):
             os.remove(THUMB_VERTICAL)
 
         progresso.resumo_final()
@@ -2813,7 +3227,10 @@ def executar_apenas_upload():
             "corte_curto": {"inicio": 0, "fim": 0, "titulo": "", "tags": []},
         })
 
-    etapas = ["Autenticar YouTube", "Upload YouTube longo", "Upload YouTube Shorts", "Upload TikTok"]
+    etapas = [
+        "Autenticar YouTube", "Upload YouTube longo", "Upload YouTube Shorts",
+        "Upload TikTok", "Upload Instagram Reels",
+    ]
     progresso = BarraProgresso(etapas)
     print("=== UPLOAD APENAS (cortes ja renderizados) ===", flush=True)
 
@@ -2824,29 +3241,14 @@ def executar_apenas_upload():
 
         garantir_thumbnails_para_upload(HORIZ, VERT)
 
-        progresso.iniciar_etapa("Upload YouTube longo")
-        fazer_upload_youtube(
-            youtube_service, HORIZ, decisao['corte_longo']['titulo'],
-            decisao['corte_longo']['descricao'], ["mbl"],
-            progresso=progresso, thumbnail=THUMB_HORIZONTAL,
-        )
-        progresso.concluir_etapa()
+        executar_uploads_youtube(youtube_service, HORIZ, VERT, decisao, progresso)
 
-        progresso.iniciar_etapa("Upload YouTube Shorts")
-        fazer_upload_youtube(
-            youtube_service, VERT, decisao['corte_curto']['titulo'],
-            "#Shorts #MBL", decisao['corte_curto']['tags'],
-            is_shorts=True, progresso=progresso, thumbnail=THUMB_VERTICAL,
+        legenda_curta = f"{decisao['corte_curto']['titulo']} #MBL"
+        tiktok_ok, reels_ok = executar_uploads_redes_sociais(
+            VERT, legenda_curta, progresso, thumbnail=THUMB_VERTICAL,
         )
-        progresso.concluir_etapa()
 
-        progresso.iniciar_etapa("Upload TikTok")
-        tiktok_ok = fazer_upload_tiktok(
-            VERT, f"{decisao['corte_curto']['titulo']} #MBL", progresso=progresso,
-        )
-        progresso.concluir_etapa()
-
-        if tiktok_ok:
+        if pode_remover_corte_vertical(tiktok_ok, reels_ok):
             for f in (HORIZ, VERT, THUMB_HORIZONTAL, THUMB_VERTICAL):
                 if os.path.exists(f):
                     os.remove(f)
@@ -2885,8 +3287,17 @@ def executar_corrigir_thumbnail(video_id, arquivo_video=None, momento_seg=None):
 
 if __name__ == '__main__':
     import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ("--login-instagram", "--instagram-login"):
+        ok = login_instagram_interativo()
+        raise SystemExit(0 if ok else 1)
+    if len(sys.argv) > 1 and sys.argv[1] in ("--test-instagram",):
+        ok = testar_instagram_sessao()
+        raise SystemExit(0 if ok else 1)
     if len(sys.argv) > 1 and sys.argv[1] in ("--login-tiktok", "--tiktok-login"):
         ok = login_tiktok_interativo()
+        raise SystemExit(0 if ok else 1)
+    if len(sys.argv) > 1 and sys.argv[1] in ("--test-tiktok-headless", "--test-tiktok"):
+        ok = testar_tiktok_headless()
         raise SystemExit(0 if ok else 1)
     if len(sys.argv) > 1 and sys.argv[1] in ("--so-upload", "--upload-only"):
         executar_apenas_upload()

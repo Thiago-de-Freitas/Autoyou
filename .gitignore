@@ -31,8 +31,11 @@ thumb_*.jpg
 __pycache__/
 *.pyc
 tiktok_cookies.txt
+instagram_cookies.txt
+instagram_session.json
 cookies_estaticos.txt
 oracle_free_state.json
 logs/
+.tiktok_cookies_filtrados.txt
 cookies1.txt
 cookies*.txt
