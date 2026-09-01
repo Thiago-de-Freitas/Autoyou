@@ -1,19 +1,20 @@
 {
-  "assunto_relacionado": "Embates judiciais sobre candidaturas e campanhas digitais",
+  "assunto_relacionado": "Discussão sobre o fim da escala de trabalho 6x1",
   "corte_longo": {
-    "inicio": 3064.0,
-    "fim": 3314.0,
-    "titulo": "Renan Santos comenta vitorias do MBL em processos judiciais",
-    "descricao": "Renan Santos fala sobre o histórico recente de vitórias do MBL em processos na justiça e comenta a estratégia do grupo para as próximas eleições."
+    "inicio": 236.0,
+    "fim": 660.0,
+    "titulo": "Renan Santos e MBL debatem propostas para o mercado de trabalho brasileiro",
+    "descricao": "Renan Santos comenta sobre a conjuntura econômica, o papel do MBL no debate político e as articulações em torno de pautas trabalhistas e o futuro do país."
   },
   "corte_curto": {
-    "inicio": 3132.0,
-    "fim": 3190.0,
-    "titulo": "MBL acumula vitorias judiciais e reforça articulação",
+    "inicio": 372.0,
+    "fim": 430.0,
+    "titulo": "que o MBL pensa sobre as propostas de reforma trabalhista",
     "tags": [
       "mbl",
       "politica",
-      "justica"
+      "reformatrabalhista",
+      "renansantos"
     ]
   }
 }

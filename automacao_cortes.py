@@ -95,8 +95,49 @@ RSS_FEEDS_POLITICA = [
     ("InfoMoney", "https://www.infomoney.com.br/feed/"),
 ]
 ASSUNTOS_POLITICA_FALLBACK = [
-    "politica brasileira", "congresso nacional", "governo federal",
-    "MBL", "oposicao", "reforma tributaria", "eleicoes", "stf",
+    "suspensao Renan Santos Toffoli TSE",
+    "eleicoes 2026 Partido Missao",
+    "MBL Movimento Brasil Livre",
+    "politica brasileira", "congresso nacional", "stf",
+]
+
+# Pesquisa web (set/2026): assuntos em alta — suspensao de Renan Santos (Toffoli/TSE),
+# eleicoes 2026, Partido Missao homologado pelo TSE (nov/2025).
+# Canais MBL com evidencia publica: @MBLiveTV (lives oficiais), @PartidoMissao (partido),
+# @mblivre (org MBL), @kimkataguiri (deputado MBL). @cortesdombl e canal de cortes
+# terceirizado (nao fonte de live). strike_risk e HEURISTICO — nao garantia legal.
+YOUTUBE_CANAIS_MBL_DEFAULT = [
+    {
+        "url": "https://www.youtube.com/@MBLiveTV",
+        "strike_risk": "low",
+        "label": "MBLiveTV",
+        "motivo": "Canal oficial de lives do MBL; ecossistema incentiva clipagem (Cortes do MBL)",
+    },
+    {
+        "url": "https://www.youtube.com/@PartidoMissao",
+        "strike_risk": "low",
+        "label": "Partido Missao",
+        "motivo": "Canal oficial do Partido Missao (legenda 14, MBL)",
+    },
+    {
+        "url": "https://www.youtube.com/@mblivre",
+        "strike_risk": "medium",
+        "label": "MBL oficial",
+        "motivo": "Canal institucional do Movimento Brasil Livre",
+    },
+    {
+        "url": "https://www.youtube.com/@kimkataguiri",
+        "strike_risk": "medium",
+        "label": "Kim Kataguiri",
+        "motivo": "Deputado e lider MBL; lives e cortes frequentes",
+    },
+]
+_STRIKE_RISK_ORDEM = {"low": 0, "medium": 1, "high": 2}
+_STRIKE_RISK_BONUS = {"low": 12, "medium": 6, "high": 0}
+MBL_MISSAO_KEYWORDS = [
+    "mbl", "missao", "missão", "renan santos", "kim kataguiri", "mamae falei",
+    "mamãe falei", "movimento brasil livre", "mblivetv", "mblive", "partido missao",
+    "partido missão", "arthur do val", "amanda vettorazzo",
 ]
 
 # User-Agent realista para reduzir fingerprinting
@@ -350,6 +391,73 @@ def eh_erro_download_403(msg: str) -> bool:
     m = msg.lower()
     return "403" in m or "forbidden" in m
 
+def eh_erro_cookies_youtube_invalidos(msg: str) -> bool:
+    m = msg.lower()
+    return any(
+        chave in m
+        for chave in (
+            "cookies are no longer valid",
+            "provided youtube account cookies",
+            "cookie file",
+            "sign in to confirm",
+        )
+    )
+
+def _fontes_cookies_youtube():
+    fontes = []
+    if os.path.exists(ARQUIVO_COOKIES_YT) and arquivo_cookies_netscape_valido(ARQUIVO_COOKIES_YT):
+        fontes.append(("arquivo", ARQUIVO_COOKIES_YT))
+    if os.path.exists(ARQUIVO_COOKIES_YT_FALLBACK) and arquivo_cookies_netscape_valido(ARQUIVO_COOKIES_YT_FALLBACK):
+        fontes.append(("arquivo", ARQUIVO_COOKIES_YT_FALLBACK))
+    browser_env = os.getenv("YOUTUBE_COOKIE_BROWSER", "").strip().lower()
+    if browser_env:
+        fontes.append(("browser", browser_env))
+    elif sys.platform == "win32":
+        for navegador in ("chrome", "edge"):
+            fontes.append(("browser", navegador))
+    return fontes
+
+def _rotulo_fonte_cookies(fonte):
+    if not fonte:
+        return "sem cookies"
+    tipo, valor = fonte
+    if tipo == "arquivo":
+        return f"arquivo {valor}"
+    return f"navegador {valor}"
+
+def _aplicar_fonte_cookies_youtube(opts, fonte):
+    opts = dict(opts)
+    opts.pop("cookiefile", None)
+    opts.pop("cookiesfrombrowser", None)
+    if not fonte:
+        return opts
+    tipo, valor = fonte
+    if tipo == "arquivo":
+        opts["cookiefile"] = valor
+    else:
+        opts["cookiesfrombrowser"] = (valor,)
+    return opts
+
+def _cookiefile_youtube():
+    fontes = _fontes_cookies_youtube()
+    for tipo, valor in fontes:
+        if tipo == "arquivo":
+            return valor
+    return None
+
+def _mensagem_renovar_cookies_youtube():
+    linhas = [
+        "YouTube bloqueou o download (cookies expirados ou anti-bot).",
+        f"1) Exporte cookies novos para '{ARQUIVO_COOKIES_YT}' (Chrome logado no YouTube).",
+        "   Extensao: Get cookies.txt LOCALLY — exporte youtube.com.",
+    ]
+    if sys.platform == "win32":
+        linhas.append(
+            "2) Ou feche o Chrome e rode de novo (o script tenta cookies do navegador)."
+        )
+    linhas.append('3) Atualize o yt-dlp: pip install -U "yt-dlp[default]"')
+    return "\n".join(linhas)
+
 def eh_live_agendada(msg: str) -> bool:
     m = msg.lower()
     chaves = [
@@ -391,7 +499,7 @@ def _suprimir_stderr_ytdlp():
         finally:
             sys.stderr = stderr_antigo
 
-def _ydl_opts_youtube(cookiefile=None, extract_flat=False, ignoreerrors=False):
+def _ydl_opts_youtube(cookiefile=None, extract_flat=False, ignoreerrors=False, fonte_cookies=None):
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -406,7 +514,9 @@ def _ydl_opts_youtube(cookiefile=None, extract_flat=False, ignoreerrors=False):
     }
     if extract_flat is not None:
         opts["extract_flat"] = extract_flat
-    if cookiefile:
+    if fonte_cookies:
+        opts = _aplicar_fonte_cookies_youtube(opts, fonte_cookies)
+    elif cookiefile:
         opts["cookiefile"] = cookiefile
     if ignoreerrors:
         opts["ignoreerrors"] = True
@@ -449,10 +559,10 @@ def carregar_estado_pipeline():
     with open(ARQUIVO_PIPELINE_STATE, encoding="utf-8") as f:
         return json.load(f)
 
-def _extrair_info_video_youtube(cookiefile, video_id):
+def _extrair_info_video_youtube(fonte_cookies, video_id):
     try:
         with _suprimir_stderr_ytdlp():
-            with YoutubeDL(_ydl_opts_youtube(cookiefile, extract_flat=False, ignoreerrors=True)) as ydl:
+            with YoutubeDL(_ydl_opts_youtube(extract_flat=False, ignoreerrors=True, fonte_cookies=fonte_cookies)) as ydl:
                 return ydl.extract_info(
                     f"https://www.youtube.com/watch?v={video_id}",
                     download=False,
@@ -574,7 +684,7 @@ def liberar_video_atual(arquivo="video_original.mp4"):
 def baixar_proximo_video_disponivel(progresso, ignorar, arquivo_original, youtube_service=None):
     for tentativa in range(1, MAX_TENTATIVAS_NOVO_VIDEO + 1):
         progresso.iniciar_etapa("Buscar live")
-        url_alvo = obter_live_recente_mbl(progresso=progresso, video_ids_ignorar=ignorar)
+        url_alvo = obter_live_recente_canais(progresso=progresso, video_ids_ignorar=ignorar)
         progresso.concluir_etapa()
         video_id = extrair_id_youtube(url_alvo)
 
@@ -664,101 +774,209 @@ def formatar_historico_prompt(historico):
         linhas.append(f"  {i}. {bl['inicio']:.1f}s - {bl['fim']:.1f}s")
     return "\n".join(linhas)
 
-# ==========================================
-# FUNÇÕES DE CAPTAÇÃO E DOWNLOAD
-# ==========================================
-def obter_live_recente_mbl(progresso=None, video_ids_ignorar=None):
+def _normalizar_texto_score(texto):
+    texto = str(texto or "").lower()
+    for orig, dest in (
+        ("á", "a"), ("à", "a"), ("â", "a"), ("ã", "a"),
+        ("é", "e"), ("ê", "e"), ("í", "i"), ("ó", "o"),
+        ("ô", "o"), ("õ", "o"), ("ú", "u"), ("ç", "c"),
+    ):
+        texto = texto.replace(orig, dest)
+    return texto
+
+def calcular_score_relevancia_video(titulo, assuntos_em_alta=None):
+    titulo_norm = _normalizar_texto_score(titulo)
+    if not titulo_norm:
+        return 0
+    score = 0
+    for kw in MBL_MISSAO_KEYWORDS:
+        if _normalizar_texto_score(kw) in titulo_norm:
+            score += 3
+    for indice, assunto in enumerate(assuntos_em_alta or []):
+        assunto_norm = _normalizar_texto_score(assunto)
+        peso = max(1, 6 - indice)
+        if assunto_norm and assunto_norm in titulo_norm:
+            score += peso * 3
+        for palavra in assunto_norm.split():
+            if len(palavra) >= 4 and palavra in titulo_norm:
+                score += peso
+    return score
+
+def _carregar_youtube_canais_mbl():
+    raw = os.getenv("YOUTUBE_CANAIS_MBL", "").strip()
+    if not raw:
+        return list(YOUTUBE_CANAIS_MBL_DEFAULT)
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list) and parsed:
+            canais = []
+            for item in parsed:
+                if isinstance(item, str) and item.strip():
+                    canais.append({"url": item.strip(), "strike_risk": "medium", "label": item.strip()})
+                elif isinstance(item, dict) and item.get("url"):
+                    canais.append({
+                        "url": str(item["url"]).strip(),
+                        "strike_risk": str(item.get("strike_risk", "medium")).lower(),
+                        "label": str(item.get("label") or item["url"]).strip(),
+                    })
+            if canais:
+                return canais
+    except json.JSONDecodeError:
+        pass
+    canais = []
+    for parte in raw.split(","):
+        url = parte.strip()
+        if url:
+            canais.append({"url": url, "strike_risk": "medium", "label": url})
+    return canais or list(YOUTUBE_CANAIS_MBL_DEFAULT)
+
+def _ordenar_canais_mbl(canais):
+    return sorted(
+        canais,
+        key=lambda c: (
+            _STRIKE_RISK_ORDEM.get(str(c.get("strike_risk", "medium")).lower(), 1),
+            str(c.get("label", c.get("url", ""))).lower(),
+        ),
+    )
+
+def _score_candidato_video(info, canal_cfg, assuntos_em_alta):
+    titulo = info.get("title", "")
+    relevancia = calcular_score_relevancia_video(titulo, assuntos_em_alta)
+    bonus_risco = _STRIKE_RISK_BONUS.get(str(canal_cfg.get("strike_risk", "medium")).lower(), 0)
+    return relevancia + bonus_risco
+
+def _varrer_canal_youtube(canal_url, fonte_atual, video_ids_ignorar, max_validacoes=8):
+    live_info = None
+    replays = []
     video_ids_ignorar = set(video_ids_ignorar or [])
-    canais = ["https://www.youtube.com/@MBLiveTV"]
-    canal_alvo = random.choice(canais)
-    if progresso:
-        progresso.atualizar_sub(10, f"canal: {canal_alvo}")
-    else:
-        print(f"[*] Varrendo live do canal: {canal_alvo}...")
 
-    cookiefile = None
-    if os.path.exists(ARQUIVO_COOKIES_YT) and arquivo_cookies_netscape_valido(ARQUIVO_COOKIES_YT):
-        cookiefile = ARQUIVO_COOKIES_YT
-    elif os.path.exists(ARQUIVO_COOKIES_YT_FALLBACK) and arquivo_cookies_netscape_valido(ARQUIVO_COOKIES_YT_FALLBACK):
-        cookiefile = ARQUIVO_COOKIES_YT_FALLBACK
-    elif os.path.exists(ARQUIVO_COOKIES_YT_FALLBACK):
-        print(f"[!] Cookies inválidos (formato) em '{ARQUIVO_COOKIES_YT_FALLBACK}'. Ignorando cookies para o yt-dlp.")
-
-    def retornar_video(info, rotulo="Live ativa"):
-        titulo = info.get("title", "")
-        url_final = f"https://www.youtube.com/watch?v={info['id']}"
-        if progresso:
-            progresso.atualizar_sub(100, f"'{titulo}'")
-        else:
-            print(f"[+] {rotulo} encontrada: '{titulo}'")
-        return url_final
-
-    # 1) Endpoint /live — transmissao ao vivo real
     try:
         with _suprimir_stderr_ytdlp():
-            with YoutubeDL(_ydl_opts_youtube(cookiefile, extract_flat=False)) as ydl:
-                info = ydl.extract_info(f"{canal_alvo}/live", download=False)
+            with YoutubeDL(_ydl_opts_youtube(extract_flat=False, fonte_cookies=fonte_atual)) as ydl:
+                info = ydl.extract_info(f"{canal_url}/live", download=False)
                 if _info_eh_live_ativa(info):
-                    return retornar_video(info)
+                    live_info = info
     except Exception as e:
         msg = str(e)
+        if eh_erro_cookies_youtube_invalidos(msg):
+            raise
         if not eh_live_agendada(msg):
-            print(f"[-] Aviso ao consultar /live: {e}")
+            print(f"[-] Aviso ao consultar /live ({canal_url}): {e}")
 
-    # 2) Varre /streams e valida cada video (limite para nao travar)
-    if progresso:
-        progresso.atualizar_sub(30, "varrendo aba streams...")
-    else:
-        print("[*] Fallback: validando transmissoes na aba streams...")
+    if live_info:
+        return live_info, replays
 
-    replay_candidato = None
-    max_validacoes = 8
     try:
-        opts_streams = _ydl_opts_youtube(cookiefile, extract_flat=True)
+        opts_streams = _ydl_opts_youtube(extract_flat=True, fonte_cookies=fonte_atual)
         opts_streams["playlistend"] = 15
         with _suprimir_stderr_ytdlp():
             with YoutubeDL(opts_streams) as ydl:
-                info = ydl.extract_info(f"{canal_alvo}/streams", download=False)
+                info = ydl.extract_info(f"{canal_url}/streams", download=False)
         validados = 0
         for entry in info.get("entries") or []:
             if validados >= max_validacoes:
                 break
             video_id = entry.get("id")
-            if not video_id:
-                continue
-            if entry.get("live_status") == "is_upcoming":
+            if not video_id or entry.get("live_status") == "is_upcoming":
                 continue
             validados += 1
-            det = _extrair_info_video_youtube(cookiefile, video_id)
+            det = _extrair_info_video_youtube(fonte_atual, video_id)
             if not det:
                 continue
             if _info_eh_live_ativa(det):
-                return retornar_video(det)
-            if _info_eh_replay_recente(det) and video_id not in video_ids_ignorar:
-                replay_candidato = det
+                live_info = det
                 break
+            if _info_eh_replay_recente(det) and video_id not in video_ids_ignorar:
+                replays.append(det)
     except Exception as e:
-        print(f"[-] Erro ao buscar live: {e}")
+        print(f"[-] Erro ao varrer canal {canal_url}: {e}")
 
-    # 3) Sem live no ar: usa a gravacao mais recente ja encerrada
-    if replay_candidato:
+    return live_info, replays
+
+# ==========================================
+# FUNÇÕES DE CAPTAÇÃO E DOWNLOAD
+# ==========================================
+def obter_live_recente_canais(progresso=None, video_ids_ignorar=None, assuntos_em_alta=None):
+    video_ids_ignorar = set(video_ids_ignorar or [])
+    canais = _ordenar_canais_mbl(_carregar_youtube_canais_mbl())
+
+    if assuntos_em_alta is None:
+        assuntos_em_alta, _ = obter_assuntos_politica_em_alta(progresso=progresso)
+
+    if progresso:
+        progresso.atualizar_sub(5, f"{len(canais)} canais MBL/Missao")
+    else:
+        print(f"[*] Varrendo {len(canais)} canais MBL/Missao (prioridade strike_risk=low)...")
+
+    cookiefile = _cookiefile_youtube()
+    fonte_atual = (_fontes_cookies_youtube() or [None])[0]
+
+    def retornar_video(info, rotulo="Live ativa", canal_cfg=None):
+        titulo = info.get("title", "")
+        url_final = f"https://www.youtube.com/watch?v={info['id']}"
+        canal_txt = f" ({canal_cfg['label']})" if canal_cfg else ""
+        score = _score_candidato_video(info, canal_cfg or {}, assuntos_em_alta)
         if progresso:
-            progresso.atualizar_sub(80, "usando replay recente (live offline)")
+            progresso.atualizar_sub(100, f"'{titulo}'{canal_txt}")
         else:
-            print("[*] Nenhuma live no ar. Usando a gravacao mais recente...")
-        return retornar_video(replay_candidato, rotulo="Replay recente")
+            print(f"[+] {rotulo} encontrada{canal_txt} [score={score}]: '{titulo}'")
+        return url_final
+
+    melhor_live = None
+    melhor_live_score = -1
+    melhor_live_cfg = None
+    melhor_replay = None
+    melhor_replay_score = -1
+    melhor_replay_cfg = None
+
+    for indice, canal_cfg in enumerate(canais):
+        canal_url = canal_cfg["url"]
+        pct = 10 + int((indice / max(len(canais), 1)) * 70)
+        if progresso:
+            progresso.atualizar_sub(pct, f"canal: {canal_cfg.get('label', canal_url)}")
+        else:
+            print(f"[*] Canal [{canal_cfg.get('strike_risk', 'medium')}]: {canal_url}")
+
+        try:
+            live_info, replays = _varrer_canal_youtube(
+                canal_url, fonte_atual, video_ids_ignorar,
+            )
+        except Exception as e:
+            if eh_erro_cookies_youtube_invalidos(str(e)):
+                print(f"[!] Cookies do YouTube expirados em '{cookiefile or 'navegador'}'. Renove cookies.txt.", flush=True)
+            continue
+
+        if live_info:
+            score = _score_candidato_video(live_info, canal_cfg, assuntos_em_alta)
+            if score > melhor_live_score:
+                melhor_live = live_info
+                melhor_live_score = score
+                melhor_live_cfg = canal_cfg
+
+        for replay in replays:
+            score = _score_candidato_video(replay, canal_cfg, assuntos_em_alta)
+            if score > melhor_replay_score:
+                melhor_replay = replay
+                melhor_replay_score = score
+                melhor_replay_cfg = canal_cfg
+
+    if melhor_live:
+        return retornar_video(melhor_live, canal_cfg=melhor_live_cfg)
+
+    if melhor_replay:
+        if progresso:
+            progresso.atualizar_sub(85, "replay recente (sem live no ar)")
+        else:
+            print("[*] Nenhuma live no ar. Usando replay com maior relevancia...")
+        return retornar_video(melhor_replay, rotulo="Replay recente", canal_cfg=melhor_replay_cfg)
 
     raise ValueError(
-        "Nenhuma live ativa nem gravacao recente encontrada. "
-        "O canal pode estar offline ou com apenas lives agendadas."
+        "Nenhuma live ativa nem gravacao recente encontrada nos canais configurados. "
+        "Verifique YOUTUBE_CANAIS_MBL ou aguarde nova transmissao."
     )
 
-def _cookiefile_youtube():
-    if os.path.exists(ARQUIVO_COOKIES_YT) and arquivo_cookies_netscape_valido(ARQUIVO_COOKIES_YT):
-        return ARQUIVO_COOKIES_YT
-    if os.path.exists(ARQUIVO_COOKIES_YT_FALLBACK) and arquivo_cookies_netscape_valido(ARQUIVO_COOKIES_YT_FALLBACK):
-        return ARQUIVO_COOKIES_YT_FALLBACK
-    return None
+def obter_live_recente_mbl(progresso=None, video_ids_ignorar=None):
+    return obter_live_recente_canais(progresso=progresso, video_ids_ignorar=video_ids_ignorar)
 
 def _arquivos_parciais_download(destino):
     pasta = os.path.dirname(os.path.abspath(destino)) or "."
@@ -813,13 +1031,29 @@ def baixar_video(url_video, nome_arquivo_saida, progresso=None):
     if not progresso:
         print(f"[*] Iniciando download do vídeo original...")
 
-    cookiefile = _cookiefile_youtube()
+    fontes = _fontes_cookies_youtube() or [None]
     inicio_dl = time.time()
     max_segundos_live = LIVE_GRAVACAO_MAX_MINUTOS * 60
+    eh_live = False
 
-    with YoutubeDL(_ydl_opts_youtube(cookiefile, extract_flat=False)) as ydl:
-        info = ydl.extract_info(url_video, download=False)
-    eh_live = _info_eh_live_ativa(info)
+    for indice_fonte, fonte in enumerate(fontes):
+        if indice_fonte > 0:
+            print(f"[!] Tentando cookies via {_rotulo_fonte_cookies(fonte)}...", flush=True)
+        try:
+            with YoutubeDL(_ydl_opts_youtube(extract_flat=False, fonte_cookies=fonte)) as ydl:
+                info = ydl.extract_info(url_video, download=False)
+            eh_live = _info_eh_live_ativa(info)
+            break
+        except Exception as exc:
+            msg = str(exc)
+            if indice_fonte < len(fontes) - 1 and (
+                eh_erro_cookies_youtube_invalidos(msg)
+                or eh_erro_download_403(msg)
+                or eh_erro_anti_bot_youtube(msg)
+            ):
+                print(f"[!] Falha com {_rotulo_fonte_cookies(fonte)}: {exc}", flush=True)
+                continue
+            raise
 
     if eh_live:
         msg_live = f"gravando live (max {LIVE_GRAVACAO_MAX_MINUTOS} min)..."
@@ -878,8 +1112,6 @@ def baixar_video(url_video, nome_arquivo_saida, progresso=None):
         },
         "progress_hooks": [hook_download],
     }
-    if cookiefile:
-        base_opts["cookiefile"] = cookiefile
     if eh_live:
         base_opts["download_ranges"] = download_range_func(None, [(0, max_segundos_live)])
         base_opts["force_keyframes_at_cuts"] = True
@@ -900,39 +1132,47 @@ def baixar_video(url_video, nome_arquivo_saida, progresso=None):
         threading.Thread(target=_timeout_conectando, daemon=True).start()
 
     ultimo_erro = None
+    download_ok = False
     try:
-        for indice, (formato, rotulo_fmt) in enumerate(YTDLP_FORMATOS_DOWNLOAD):
-            ydl_opts = {**base_opts, "format": formato}
-            if indice > 0:
-                print(f"[!] Tentando download via {rotulo_fmt}...", flush=True)
-                if progresso:
-                    progresso.atualizar_sub(max(progresso.sub_pct, 2), f"retry {rotulo_fmt}...")
-            try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url_video])
-                ultimo_erro = None
+        for indice_fonte, fonte in enumerate(fontes):
+            if indice_fonte > 0:
+                print(f"[!] Retry download com {_rotulo_fonte_cookies(fonte)}...", flush=True)
+            for indice_fmt, (formato, rotulo_fmt) in enumerate(YTDLP_FORMATOS_DOWNLOAD):
+                ydl_opts = _aplicar_fonte_cookies_youtube({**base_opts, "format": formato}, fonte)
+                if indice_fmt > 0 or indice_fonte > 0:
+                    print(f"[!] Tentando download via {rotulo_fmt}...", flush=True)
+                    if progresso:
+                        progresso.atualizar_sub(max(progresso.sub_pct, 2), f"retry {rotulo_fmt}...")
+                try:
+                    with YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([url_video])
+                    download_ok = True
+                    break
+                except Exception as e:
+                    ultimo_erro = e
+                    msg = str(e)
+                    if eh_erro_download_403(msg) and indice_fmt < len(YTDLP_FORMATOS_DOWNLOAD) - 1:
+                        print(f"[!] YouTube bloqueou formato {rotulo_fmt} (403).", flush=True)
+                        continue
+                    print(f"[-] Erro ao baixar video ({_rotulo_fonte_cookies(fonte)} / {rotulo_fmt}): {e}")
+                    if eh_live_agendada(msg):
+                        raise RuntimeError(
+                            "A URL encontrada e uma live agendada, nao uma transmissao ativa. "
+                            "Aguarde o inicio da live e execute novamente."
+                        ) from e
+                    if indice_fonte < len(fontes) - 1 and (
+                        eh_erro_cookies_youtube_invalidos(msg)
+                        or eh_erro_download_403(msg)
+                        or eh_erro_anti_bot_youtube(msg)
+                    ):
+                        break
+                    if indice_fmt >= len(YTDLP_FORMATOS_DOWNLOAD) - 1:
+                        if indice_fonte >= len(fontes) - 1:
+                            raise RuntimeError(_mensagem_renovar_cookies_youtube()) from e
+                        break
+            if download_ok:
                 break
-            except Exception as e:
-                ultimo_erro = e
-                msg = str(e)
-                if eh_erro_download_403(msg) and indice < len(YTDLP_FORMATOS_DOWNLOAD) - 1:
-                    print(f"[!] YouTube bloqueou formato {rotulo_fmt} (403).", flush=True)
-                    continue
-                print(f"[-] Erro ao baixar vídeo ({rotulo_fmt}): {e}")
-                if eh_erro_anti_bot_youtube(msg):
-                    raise RuntimeError(
-                        "YouTube bloqueou o download (anti-bot/403). "
-                        f"Renove os cookies em '{ARQUIVO_COOKIES_YT}' (exporte do Chrome logado no YouTube) "
-                        "e atualize o yt-dlp: pip install -U \"yt-dlp[default]\"."
-                    ) from e
-                if eh_live_agendada(msg):
-                    raise RuntimeError(
-                        "A URL encontrada é uma live agendada, não uma transmissão ativa. "
-                        "Aguarde o início da live e execute novamente."
-                    ) from e
-                if indice >= len(YTDLP_FORMATOS_DOWNLOAD) - 1:
-                    raise
-        if ultimo_erro:
+        if not download_ok and ultimo_erro:
             raise ultimo_erro
     finally:
         if monitor_parar:
@@ -1738,6 +1978,15 @@ def montar_prompt_escolha_cortes(
 ):
     assuntos_txt = "\n".join(f"  - {a}" for a in assuntos_em_alta[:12]) or "  (indisponivel)"
     noticias_txt = "\n".join(f"  - {t[:140]}" for t in titulos_noticias[:15]) or "  (sem manchetes no momento)"
+    assunto_prioritario = (assuntos_em_alta[0] if assuntos_em_alta else "politica brasileira")
+
+    bloco_mbl_missao = f"""
+    PRIORIDADE MAXIMA — MBL, PARTIDO MISSAO E ASSUNTO #1 EM ALTA:
+    - Assunto politico prioritario: {assunto_prioritario}
+    - Busque trechos que tratem de MBL, Movimento Brasil Livre, Partido Missao, Renan Santos,
+      Kim Kataguiri ou do assunto prioritario acima.
+    - Se o audio abordar o assunto em alta com MBL/Missao, priorize esse trecho sobre outros.
+    """
 
     if modo_fallback:
         bloco_editorial = f"""
@@ -1772,6 +2021,7 @@ def montar_prompt_escolha_cortes(
 
     MANCHETES RECENTES (contexto):
 {noticias_txt}
+{bloco_mbl_missao}
 {bloco_editorial}
 
     CORTES JA PUBLICADOS NESTE VIDEO (NAO REPETIR, NAO SOBREPOR):
