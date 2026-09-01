@@ -1,19 +1,19 @@
 {
-  "assunto_relacionado": "Gestão do déficit das contas públicas",
+  "assunto_relacionado": "Embates judiciais sobre candidaturas e campanhas digitais",
   "corte_longo": {
-    "inicio": 217.0,
-    "fim": 660.0,
-    "titulo": "Renan Santos comenta vitoria judicial do MBL e discute transparencia",
-    "descricao": "Renan Santos fala sobre o processo judicial vencido pelo MBL e reflete sobre a importancia da transparencia e da responsabilidade nos gastos publicos."
+    "inicio": 3064.0,
+    "fim": 3314.0,
+    "titulo": "Renan Santos comenta vitorias do MBL em processos judiciais",
+    "descricao": "Renan Santos fala sobre o histórico recente de vitórias do MBL em processos na justiça e comenta a estratégia do grupo para as próximas eleições."
   },
   "corte_curto": {
-    "inicio": 456.0,
-    "fim": 514.0,
-    "titulo": "MBL e a prestacao de contas",
+    "inicio": 3132.0,
+    "fim": 3190.0,
+    "titulo": "MBL acumula vitorias judiciais e reforça articulação",
     "tags": [
       "mbl",
       "politica",
-      "contaspublicas"
+      "justica"
     ]
   }
 }

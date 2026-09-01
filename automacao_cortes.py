@@ -83,6 +83,7 @@ MAX_TENTATIVAS_NOVO_VIDEO = 5
 FOCO_VERTICAL_X_FRAC = float(os.getenv("FOCO_VERTICAL_X", "0.42"))
 VERTICAL_LARGURA = 1080
 VERTICAL_ALTURA = 1920
+INTRO_DURACAO_SEG = float(os.getenv("INTRO_DURACAO_SEG", "3"))
 THUMB_HORIZONTAL = "thumb_horizontal.jpg"
 THUMB_VERTICAL = "thumb_vertical.jpg"
 ARQUIVO_CACHE_ASSUNTOS = "cache_assuntos_politica.json"
@@ -1220,6 +1221,11 @@ def validar_video_renderizado(arquivo, duracao_esperada, rotulo):
     if not any(s.get("codec_type") == "audio" for s in streams):
         raise RuntimeError(f"{rotulo}: sem faixa de audio")
 
+def duracao_intro_efetiva(arquivo_intro="intro_onca.mp4"):
+    if not os.path.isfile(arquivo_intro):
+        return INTRO_DURACAO_SEG
+    return min(ffprobe_duracao(arquivo_intro), INTRO_DURACAO_SEG)
+
 def extrair_thumbnail_video(arquivo_video, arquivo_saida, momento_seg=3.0, largura_alvo=1280):
     if not os.path.isfile(arquivo_video):
         raise FileNotFoundError(f"Video para thumbnail nao encontrado: {arquivo_video}")
@@ -1249,7 +1255,7 @@ def garantir_thumbnails_para_upload(arquivo_h, arquivo_v):
     if not os.path.isfile(THUMB_HORIZONTAL):
         momento_h = 3.0
         if os.path.isfile("intro_onca.mp4"):
-            momento_h = ffprobe_duracao("intro_onca.mp4") + 3.0
+            momento_h = duracao_intro_efetiva() + 3.0
         extrair_thumbnail_video(arquivo_h, THUMB_HORIZONTAL, momento_seg=momento_h)
     if not os.path.isfile(THUMB_VERTICAL):
         dur_v = ffprobe_duracao(arquivo_v)
@@ -1384,11 +1390,12 @@ def fazer_corte_video(arquivo_entrada, arquivo_horizontal, arquivo_vertical, t_l
         )
 
         largura, altura = ffprobe_tamanho_video(temp_corte_h)
-        dur_intro = ffprobe_duracao("intro_onca.mp4")
+        dur_intro = duracao_intro_efetiva()
 
         rodar_ffmpeg(
             [
                 "-i", "intro_onca.mp4",
+                "-t", f"{dur_intro:.3f}",
                 "-vf", (
                     f"scale={largura}:{altura}:force_original_aspect_ratio=decrease,"
                     f"pad={largura}:{altura}:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
